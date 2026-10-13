@@ -1,0 +1,817 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Skibidi Game</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#030407;color:white;font-family:monospace;overflow:hidden}
+canvas{width:100vw;height:100vh;display:block;cursor:crosshair}
+#hud{position:fixed;inset:0;pointer-events:none;text-shadow:0 2px 5px #000}
+#title{position:absolute;top:20px;left:22px;font-size:clamp(20px,3vw,34px);letter-spacing:4px;color:#fff}
+#objective{position:absolute;top:66px;left:24px;color:#c5d3df;font-size:12px}
+#stats{position:absolute;top:20px;right:22px;text-align:right;line-height:2;font-size:14px}
+#cross{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font-size:20px}
+#hint{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 14px;background:#05080bd9;border:1px solid #506070;text-align:center;font-size:12px;max-width:95vw}
+#overlay{position:fixed;inset:0;z-index:5;display:flex;align-items:center;justify-content:center;background:radial-gradient(#31090fe8,#020204 75%);padding:20px}
+.panel{width:min(560px,95vw);padding:35px;background:#070a10;border:1px solid #67343a;box-shadow:0 0 70px #ff102522}
+.tag{font-size:11px;letter-spacing:4px;color:#ff3545}
+h1{font-size:clamp(35px,8vw,65px);line-height:.95;letter-spacing:-3px;margin:20px 0}
+p{line-height:1.6;color:#c1cbd5;font-size:14px}
+button{background:#b51d2c;border:1px solid #ff5361;color:white;padding:14px 18px;font:bold 13px monospace;cursor:pointer;letter-spacing:1px}
+button:hover{background:#e12b3b}
+.secondary{background:#111821;border-color:#566575}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+.small{font-size:11px;color:#8191a0}
+#flash{position:fixed;inset:0;z-index:3;pointer-events:none;background:#f00;opacity:0}
+#scare{position:fixed;inset:0;z-index:4;display:none;align-items:center;justify-content:center;background:#080000;overflow:hidden}
+#scare img{width:100vw;height:100vh;object-fit:contain;transform:scale(1.4);filter:contrast(1.4) saturate(1.5);animation:slam .55s cubic-bezier(.1,.8,.2,1) forwards}
+#scareText{position:absolute;bottom:8%;left:0;width:100%;text-align:center;font-size:clamp(28px,7vw,76px);font-weight:bold;color:#ff1028;text-shadow:0 0 25px red;letter-spacing:5px;animation:flicker .08s infinite}
+@keyframes slam{0%{transform:scale(.05) rotate(-5deg);filter:brightness(3)}65%{transform:scale(1.65) rotate(2deg)}100%{transform:scale(1.4)}}
+@keyframes flicker{0%{opacity:1}50%{opacity:.65}100%{opacity:1}}
+@media(max-width:500px){.panel{padding:22px}#title{left:10px;top:10px}#objective{left:12px;top:47px}#stats{right:10px;top:10px;font-size:11px}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+  <div id="title">THE SKIBIDI GAME</div>
+  <div id="objective">FIND THE KEYS. FIND THE EXIT.</div>
+  <div id="stats">
+    LEVEL <span id="level">1</span><br>
+    HEALTH <span id="health">100</span><br>
+    KEYS <span id="keys">0</span>/3<br>
+    ENEMIES <span id="enemies">4</span><br>
+    <span id="weapon">WEAPON: NONE</span>
+  </div>
+  <div id="cross">+</div>
+  <div id="hint">WASD MOVE · MOUSE LOOK · F FLASHLIGHT · SHIFT SPRINT</div>
+</div>
+<div id="flash"></div>
+<div id="scare">
+  <img id="scareImg" src="skibidi.png" alt="">
+  <div id="scareText">SKIBIDI.</div>
+</div>
+<div id="overlay">
+  <div class="panel">
+    <div class="tag">NIGHT SHIFT // 03:17 AM</div>
+    <h1>THE<br>SKIBIDI GAME</h1>
+    <p>Something is singing in the abandoned tunnels.</p>
+    <p>Find three keys, escape the toilets and survive long enough to discover what is waiting on Level 2.</p>
+    <p><b>LEVEL 1:</b> Explore and escape.<br>
+    <b>LEVEL 2:</b> Get your knife. Fight. Jump. Survive.</p>
+    <div class="row">
+      <button id="start">ENTER THE TUNNELS</button>
+      <button class="secondary" id="soundToggle">SOUND: ON</button>
+    </div>
+    <p class="small">Headphones recommended. Audio starts after you press Enter.</p>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const canvas = document.querySelector("#game");
+const c = canvas.getContext("2d");
+const $ = id => document.getElementById(id);
+
+let W, H, running = false, level = 1, last = 0;
+let gameTime = 0, audioOn = true, ctxAudio, master, musicOn = false;
+let timer, player, enemies, keys, exit, obstacles = [];
+let held = {}, zBuffer = [], jumpHeight = 0, jumpVelocity = 0;
+let knifeSwing = 0, scareStarted = false, lastStep = 0;
+const TILE = 64;
+const FOV = Math.PI / 2.7;
+const map1 = [
+"################",
+"#......#.......#",
+"#.##...#..##...#",
+"#..K......#....#",
+"#......##......#",
+"###.#......##..#",
+"#...#..K.......#",
+"#......####....#",
+"#..##.......#..#",
+"#.....#..K.....#",
+"#.E...#........#",
+"################"
+];
+const map2 = [
+"################",
+"#..............#",
+"#.##...#..##...#",
+"#......#.......#",
+"#..##.......#..#",
+"#......##......#",
+"#..#.........#.#",
+"#..#..##.......#",
+"#......#..##...#",
+"#..............#",
+"#.E............#",
+"################"
+];
+let map = map1;
+
+const toiletImg = new Image();
+toiletImg.src = "skibidi.png";
+toiletImg.onerror = () => console.warn(
+  "Could not load skibidi.png. Check that it is beside index.html."
+);
+
+function resize() {
+  W = canvas.width = innerWidth;
+  H = canvas.height = innerHeight;
+  c.imageSmoothingEnabled = true;
+}
+addEventListener("resize", resize);
+resize();
+
+/* ---------------- AUDIO ---------------- */
+
+function noiseBuf(duration) {
+  const b = ctxAudio.createBuffer(
+    1, Math.floor(ctxAudio.sampleRate * duration),
+    ctxAudio.sampleRate
+  );
+  const a = b.getChannelData(0);
+  for (let i = 0; i < a.length; i++)
+    a[i] = Math.random() * 2 - 1;
+  return b;
+}
+
+function tone(f, d, type = "sine", g = .05, to) {
+  if (!ctxAudio || !audioOn) return;
+  try {
+    const o = ctxAudio.createOscillator();
+    const v = ctxAudio.createGain();
+    const t = ctxAudio.currentTime;
+    o.type = type;
+    o.frequency.setValueAtTime(f, t);
+    if (to) o.frequency.exponentialRampToValueAtTime(
+      Math.max(20, to), t + d
+    );
+    v.gain.setValueAtTime(g, t);
+    v.gain.exponentialRampToValueAtTime(.0001, t + d);
+    o.connect(v).connect(master);
+    o.start(t);
+    o.stop(t + d);
+  } catch {}
+}
+
+function noise(d, g, freq, q = 1) {
+  if (!ctxAudio || !audioOn) return;
+  try {
+    const s = ctxAudio.createBufferSource();
+    const f = ctxAudio.createBiquadFilter();
+    const v = ctxAudio.createGain();
+    s.buffer = noiseBuf(d);
+    f.type = "bandpass";
+    f.frequency.value = freq;
+    f.Q.value = q;
+    v.gain.setValueAtTime(g, ctxAudio.currentTime);
+    v.gain.exponentialRampToValueAtTime(
+      .0001, ctxAudio.currentTime + d
+    );
+    s.connect(f).connect(v).connect(master);
+    s.start();
+  } catch {}
+}
+
+function drone() {
+  const mk = (f, type, g, lp) => {
+    const o = ctxAudio.createOscillator();
+    const v = ctxAudio.createGain();
+    const l = ctxAudio.createBiquadFilter();
+    o.type = type;
+    o.frequency.value = f;
+    v.gain.value = g;
+    l.type = "lowpass";
+    l.frequency.value = lp;
+    o.connect(l).connect(v).connect(master);
+    o.start();
+  };
+  mk(48, "sine", .07, 300);
+  mk(100, "sawtooth", .012, 220);
+  mk(50.4, "sine", .04, 200);
+
+  const s = ctxAudio.createBufferSource();
+  const f = ctxAudio.createBiquadFilter();
+  const v = ctxAudio.createGain();
+  s.buffer = noiseBuf(3);
+  s.loop = true;
+  f.type = "lowpass";
+  f.frequency.value = 380;
+  v.gain.value = .03;
+  s.connect(f).connect(v).connect(master);
+  s.start();
+}
+
+function clang() {
+  const f = 220 + Math.random() * 400;
+  tone(f, 1.6, "triangle", .04);
+  tone(f * 2.76, 1, "sine", .02);
+}
+
+function radio() {
+  noise(1.2, .06, 1400, 2);
+  setTimeout(() => noise(.8, .04, 1800, 3), 900);
+}
+
+function chime() {
+  tone(523, .5, "sine", .07);
+  setTimeout(() => tone(784, .8, "sine", .05), 130);
+}
+
+function scareSound() {
+  if (!ctxAudio) return;
+  const was = audioOn;
+  audioOn = true;
+  noise(1.4, .5, 900, .5);
+  tone(900, 1.3, "sawtooth", .22, 120);
+  tone(140, 1.3, "square", .18, 60);
+  audioOn = was;
+}
+
+function startAudio() {
+  try {
+    if (!ctxAudio) {
+      ctxAudio = new (window.AudioContext ||
+        window.webkitAudioContext)();
+      master = ctxAudio.createGain();
+      master.gain.value = .6;
+      master.connect(ctxAudio.destination);
+      drone();
+    }
+    ctxAudio.resume();
+    audioOn = true;
+    musicOn = true;
+    scheduleClang();
+  } catch {}
+}
+
+function scheduleClang() {
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    if (musicOn && audioOn) {
+      clang();
+      if (Math.random() < .45) radio();
+      scheduleClang();
+    }
+  }, 7000 + Math.random() * 10000);
+}
+
+function stopAudio() {
+  musicOn = false;
+  clearTimeout(timer);
+  if (ctxAudio) ctxAudio.suspend();
+}
+
+/* ---------------- LEVELS ---------------- */
+
+function loadLevel(n) {
+  level = n;
+  map = n === 1 ? map1 : map2;
+  player = {
+    x: 1.5 * TILE,
+    y: 1.5 * TILE,
+    a: 0,
+    hp: 100,
+    battery: 100,
+    flash: true,
+    keys: 0,
+    invuln: 0
+  };
+
+  jumpHeight = 0;
+  jumpVelocity = 0;
+  knifeSwing = 0;
+  scareStarted = false;
+
+  keys = n === 1 ? [
+    {x:3.5*TILE,y:3.5*TILE,got:false},
+    {x:7.5*TILE,y:6.5*TILE,got:false},
+    {x:10.5*TILE,y:9.5*TILE,got:false}
+  ] : [];
+
+  enemies = n === 1 ? [
+    {x:12.5*TILE,y:2.5*TILE,alive:true},
+    {x:10.5*TILE,y:8.5*TILE,alive:true},
+    {x:5.5*TILE,y:5.5*TILE,alive:true},
+    {x:13.5*TILE,y:9.5*TILE,alive:true}
+  ] : [
+    {x:12.5*TILE,y:2.5*TILE,alive:true},
+    {x:10.5*TILE,y:8.5*TILE,alive:true},
+    {x:5.5*TILE,y:5.5*TILE,alive:true},
+    {x:13.5*TILE,y:9.5*TILE,alive:true},
+    {x:7.5*TILE,y:4.5*TILE,alive:true}
+  ];
+
+  exit = {x:2.5*TILE,y:10.5*TILE};
+  obstacles = n === 2 ? [
+    {x:5*TILE,y:3*TILE,w:40,h:28},
+    {x:9*TILE,y:6*TILE,w:38,h:35},
+    {x:12*TILE,y:7*TILE,w:42,h:25}
+  ] : [];
+
+  $("level").textContent = n;
+  $("objective").textContent = n === 1
+    ? "FIND 3 KEYS. REACH THE EXIT."
+    : "SURVIVE. KNIFE: CLICK OR SPACE. JUMP: E.";
+  $("weapon").textContent = n === 1
+    ? "WEAPON: NONE" : "WEAPON: KNIFE";
+}
+
+function startGame() {
+  startAudio();
+  loadLevel(1);
+  running = true;
+  gameTime = 0;
+  $("overlay").style.display = "none";
+  $("scare").style.display = "none";
+  last = performance.now();
+  requestAnimationFrame(loop);
+}
+
+$("start").onclick = startGame;
+$("soundToggle").onclick = () => {
+  audioOn = !audioOn;
+  $("soundToggle").textContent = "SOUND: " +
+    (audioOn ? "ON" : "OFF");
+  if (audioOn) startAudio();
+  else stopAudio();
+};
+
+/* ---------------- INPUT ---------------- */
+
+addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  held[k] = true;
+  if (["w","a","s","d"," ","e","shift"].includes(k))
+    e.preventDefault();
+
+  if (!running || e.repeat) return;
+
+  if (k === "f") {
+    player.flash = !player.flash;
+    tone(player.flash ? 620 : 250, .09, "square", .025);
+  }
+
+  if (level === 2 && k === "e") jump();
+
+  if (level === 2 && k === " ") attack();
+});
+addEventListener("keyup", e => held[e.key.toLowerCase()] = false);
+
+canvas.addEventListener("click", () => {
+  if (running && document.pointerLockElement !== canvas)
+    canvas.requestPointerLock?.();
+  if (running && level === 2) attack();
+});
+
+document.addEventListener("mousemove", e => {
+  if (running && document.pointerLockElement === canvas)
+    player.a += e.movementX * .0025;
+});
+
+function jump() {
+  if (jumpHeight <= 0) {
+    jumpVelocity = 390;
+    tone(180, .09, "triangle", .025, 280);
+  }
+}
+
+function attack() {
+  if (!running || level !== 2 || knifeSwing > 0) return;
+  knifeSwing = .35;
+  tone(400, .09, "sawtooth", .04, 100);
+
+  for (const t of enemies) {
+    if (!t.alive) continue;
+    const d = distance(player, t);
+    let a = Math.atan2(t.y-player.y,t.x-player.x);
+    let delta = Math.atan2(Math.sin(a-player.a),
+                           Math.cos(a-player.a));
+    if (d < 105 && Math.abs(delta) < .65) {
+      t.alive = false;
+      chime();
+    }
+  }
+}
+
+/* ---------------- WORLD ---------------- */
+
+function distance(a,b) {
+  return Math.hypot(a.x-b.x,a.y-b.y);
+}
+
+function wall(x,y) {
+  const tx = Math.floor(x/TILE), ty = Math.floor(y/TILE);
+  return tx < 0 || ty < 0 || ty >= map.length ||
+    tx >= map[0].length || map[ty][tx] === "#";
+}
+
+function canMove(x,y,r=13) {
+  return !wall(x-r,y-r) && !wall(x+r,y-r) &&
+         !wall(x-r,y+r) && !wall(x+r,y+r);
+}
+
+function cast(a) {
+  const dx = Math.cos(a), dy = Math.sin(a);
+  let d = 0;
+  while (d < 1100) {
+    d += 3;
+    if (wall(player.x+dx*d,player.y+dy*d)) break;
+  }
+  return d;
+}
+
+function update(dt) {
+  gameTime += dt;
+  player.invuln = Math.max(0, player.invuln-dt);
+  knifeSwing = Math.max(0,knifeSwing-dt);
+
+  if (player.flash)
+    player.battery = Math.max(0,player.battery-dt*1.1);
+  if (player.battery <= 0) player.flash = false;
+
+  let f = (held.w?1:0)-(held.s?1:0);
+  let s = (held.d?1:0)-(held.a?1:0);
+  let speed = (held.shift?205:140)*dt;
+  const mag = Math.hypot(f,s)||1;
+  const dx = (Math.cos(player.a)*f+
+    Math.cos(player.a+Math.PI/2)*s)/mag*speed;
+  const dy = (Math.sin(player.a)*f+
+    Math.sin(player.a+Math.PI/2)*s)/mag*speed;
+
+  if (canMove(player.x+dx,player.y)) player.x += dx;
+  if (canMove(player.x,player.y+dy)) player.y += dy;
+
+  if (f || s) {
+    if (gameTime-lastStep > (held.shift?.28:.45)) {
+      tone(65+Math.random()*30,.045,"triangle",.012);
+      lastStep = gameTime;
+    }
+  }
+
+  if (level === 2) {
+    jumpHeight += jumpVelocity*dt;
+    jumpVelocity -= 950*dt;
+    if (jumpHeight < 0) {
+      jumpHeight = 0;
+      jumpVelocity = 0;
+    }
+  }
+
+  for (const k of keys) {
+    if (!k.got && distance(player,k) < 27) {
+      k.got = true;
+      player.keys++;
+      chime();
+    }
+  }
+
+  for (const t of enemies) {
+    if (!t.alive) continue;
+    const d = distance(player,t);
+    const a = Math.atan2(player.y-t.y,player.x-t.x);
+
+    if (d < 470) {
+      const sp = (level === 2 ? 47 : 36)*dt;
+      const nx = t.x+Math.cos(a)*sp;
+      const ny = t.y+Math.sin(a)*sp;
+      if (canMove(nx,t.y,15)) t.x = nx;
+      if (canMove(t.x,ny,15)) t.y = ny;
+
+      if (d < 310 && Math.random() < dt*.65)
+        tone(105+Math.random()*40,.15,"sawtooth",.012,85);
+
+      if (d < 39 && player.invuln <= 0 && jumpHeight < 35) {
+        player.hp -= level === 2 ? 12 : 17;
+        player.invuln = .8;
+        $("flash").style.opacity = ".35";
+        setTimeout(()=>$("flash").style.opacity="0",100);
+        noise(.2,.09,900,.5);
+        tone(140,.3,"sawtooth",.09,55);
+
+        if (player.hp <= 0) {
+          death();
+          return;
+        }
+      }
+    }
+  }
+
+  if (distance(player,exit) < 40 &&
+      (level === 2 || player.keys >= 3)) {
+    if (level === 1) {
+      running = false;
+      document.exitPointerLock?.();
+      $("overlay").style.display = "flex";
+      $("overlay").innerHTML = `
+        <div class="panel">
+          <div class="tag">CHAPTER COMPLETE</div>
+          <h1>LEVEL TWO.</h1>
+          <p>You found the exit. But the singing followed you.</p>
+          <p>You pick up a knife. This time, you can fight back.</p>
+          <div class="row">
+            <button id="next">ENTER LEVEL 2</button>
+          </div>
+        </div>`;
+      $("next").onclick = () => {
+        loadLevel(2);
+        $("overlay").style.display = "none";
+        running = true;
+        last = performance.now();
+        requestAnimationFrame(loop);
+      };
+      chime();
+      return;
+    } else {
+      win();
+      return;
+    }
+  }
+
+  $("health").textContent = Math.max(0,Math.ceil(player.hp));
+  $("keys").textContent = player.keys;
+  $("enemies").textContent = enemies.filter(t=>t.alive).length;
+  $("hint").textContent = level === 1
+    ? "WASD MOVE · MOUSE LOOK · F FLASHLIGHT · SHIFT SPRINT"
+    : "WASD MOVE · MOUSE LOOK · E JUMP · CLICK / SPACE KNIFE";
+}
+
+/* ---------------- RENDERING ---------------- */
+
+function render() {
+  c.fillStyle = "#070a10";
+  c.fillRect(0,0,W,H);
+
+  const horizon = H*.49;
+  const sky = c.createLinearGradient(0,0,0,horizon);
+  sky.addColorStop(0,"#020306");
+  sky.addColorStop(.65,level===1?"#241017":"#101421");
+  sky.addColorStop(1,level===1?"#511820":"#30202b");
+  c.fillStyle=sky;
+  c.fillRect(0,0,W,horizon);
+
+  const floor = c.createLinearGradient(0,horizon,0,H);
+  floor.addColorStop(0,"#29242a");
+  floor.addColorStop(1,"#020305");
+  c.fillStyle=floor;
+  c.fillRect(0,horizon,W,H-horizon);
+
+  // Distant moon / ceiling lights
+  c.fillStyle=level===1?"#b72235":"#e3c6a1";
+  c.globalAlpha=.7;
+  c.beginPath();
+  c.arc(W*.73,H*.17,Math.min(W,H)*.045,0,Math.PI*2);
+  c.fill();
+  c.globalAlpha=1;
+
+  const rays=Math.ceil(W/3);
+  zBuffer = new Array(rays);
+
+  for (let i=0;i<rays;i++) {
+    const x=i*W/rays;
+    const a=player.a-FOV/2+(i/rays)*FOV;
+    const d=cast(a);
+    zBuffer[i]=d;
+    const corrected=d*Math.cos(a-player.a);
+    const wh=Math.min(H*1.7,TILE*H/(corrected+1));
+    const shade=Math.max(.04,1-corrected/780);
+    const r=Math.floor((level===1?30:35)*shade);
+    const g=Math.floor((level===1?23:34)*shade);
+    const b=Math.floor((level===1?34:47)*shade);
+    c.fillStyle=`rgb(${r},${g},${b})`;
+    c.fillRect(x,horizon-wh/2,W/rays+1,wh);
+
+    if (i%8===0) {
+      c.fillStyle=`rgba(180,20,30,${shade*.15})`;
+      c.fillRect(x,horizon-wh/2,W/rays,wh);
+    }
+  }
+
+  // Draw obstacles on level 2 as visible crates
+  if (level===2) {
+    for (const o of obstacles) {
+      const ox=o.x+o.w/2, oy=o.y+o.h/2;
+      drawSprite({x:ox,y:oy,type:"crate",d:distance(player,{x:ox,y:oy})});
+    }
+  }
+
+  const sprites = [
+    ...enemies.filter(t=>t.alive).map(t=>({...t,type:"toilet"})),
+    ...keys.filter(k=>!k.got).map(k=>({...k,type:"key"})),
+    {...exit,type:"exit"}
+  ].map(o=>({...o,d:distance(player,o),
+    a:Math.atan2(o.y-player.y,o.x-player.x)-player.a
+  })).filter(o=>Math.abs(Math.atan2(Math.sin(o.a),Math.cos(o.a)))<FOV*.72)
+    .sort((a,b)=>b.d-a.d);
+
+  for (const o of sprites) drawSprite(o);
+
+  // Flashlight vignette
+  const vg=c.createRadialGradient(W/2,H*.52,Math.min(W,H)*.08,
+                                  W/2,H*.52,Math.max(W,H)*.75);
+  vg.addColorStop(0,player.flash&&player.battery>0?
+    "rgba(0,0,0,.02)":"rgba(0,0,0,.55)");
+  vg.addColorStop(.5,"rgba(0,0,0,.25)");
+  vg.addColorStop(1,"rgba(0,0,0,.96)");
+  c.fillStyle=vg;
+  c.fillRect(0,0,W,H);
+
+  if (player.flash && player.battery>0) {
+    const lg=c.createRadialGradient(W/2,H*.54,10,W/2,H*.54,
+                                    Math.min(W,H)*.45);
+    lg.addColorStop(0,"rgba(220,238,255,.19)");
+    lg.addColorStop(.5,"rgba(160,195,220,.06)");
+    lg.addColorStop(1,"rgba(100,130,160,0)");
+    c.fillStyle=lg;
+    c.fillRect(0,0,W,H);
+  }
+
+  // Knife held in foreground on level 2
+  if (level===2) drawKnife();
+
+  // Jump changes the view height
+  if (jumpHeight>0) {
+    c.fillStyle="rgba(0,0,0,.1)";
+    c.fillRect(0,0,W,H);
+  }
+
+  // VHS noise
+  if (Math.random()<.25) {
+    c.fillStyle="rgba(220,230,255,.04)";
+    c.fillRect(0,Math.random()*H,W,1);
+  }
+
+  if (player.invuln>0) {
+    c.fillStyle=`rgba(255,0,20,${player.invuln*.12})`;
+    c.fillRect(0,0,W,H);
+  }
+}
+
+function drawSprite(o) {
+  const rel=Math.atan2(Math.sin(o.a),Math.cos(o.a));
+  const sx=W/2+Math.tan(rel)/Math.tan(FOV/2)*W/2;
+  const idx=Math.max(0,Math.min(zBuffer.length-1,
+    Math.floor(sx/W*zBuffer.length)));
+  if (o.d > zBuffer[idx]+25) return;
+
+  const corrected=o.d*Math.cos(rel);
+  const size=Math.min(H*1.3,TILE*H*1.2/(corrected+1));
+  const y=H*.49+size*.08+jumpHeight*.5;
+
+  c.save();
+  c.translate(sx,y);
+  c.globalAlpha=Math.min(1,1-o.d/1000);
+
+  if (o.type==="toilet") {
+    if (toiletImg.complete && toiletImg.naturalWidth) {
+      c.shadowColor="#ff1025";
+      c.shadowBlur=player.flash?14:0;
+      const aspect=toiletImg.naturalWidth/toiletImg.naturalHeight;
+      const iw=size*.78;
+      const ih=iw/aspect;
+      c.drawImage(toiletImg,-iw/2,-ih*.75,iw,ih);
+    } else {
+      // Fallback if skibidi.png has not been placed beside index.html
+      c.fillStyle="#e1e3e5";
+      c.fillRect(-size*.25,-size*.15,size*.5,size*.5);
+      c.fillStyle="#a66c5b";
+      c.beginPath();
+      c.arc(0,-size*.22,size*.24,0,Math.PI*2);
+      c.fill();
+      c.fillStyle="white";
+      c.fillRect(-size*.14,-size*.2,size*.09,size*.07);
+      c.fillRect(size*.05,-size*.2,size*.09,size*.07);
+      c.fillStyle="#16060a";
+      c.fillRect(-size*.13,-size*.05,size*.26,size*.07);
+    }
+  } else if (o.type==="key") {
+    c.shadowColor="#ffe68a";
+    c.shadowBlur=20;
+    c.strokeStyle="#ffdc6b";
+    c.lineWidth=5;
+    c.beginPath();
+    c.arc(-10,-size*.2,10,0,Math.PI*2);
+    c.moveTo(0,-size*.2);
+    c.lineTo(28,-size*.2);
+    c.lineTo(28,-size*.12);
+    c.stroke();
+  } else if (o.type==="exit") {
+    c.shadowColor="#ff1020";
+    c.shadowBlur=25;
+    c.fillStyle=player.keys>=3||level===2?"#f32942":"#57121c";
+    c.fillRect(-size*.18,-size*.5,size*.36,size*.5);
+    c.fillStyle="#fff";
+    c.font=`bold ${Math.max(8,size*.09)}px monospace`;
+    c.textAlign="center";
+    c.fillText(level===2?"EXIT":player.keys>=3?"EXIT":"LOCKED",0,-size*.55);
+  } else if (o.type==="crate") {
+    c.fillStyle="#51402d";
+    c.fillRect(-size*.2,-size*.25,size*.4,size*.3);
+  }
+
+  c.restore();
+}
+
+function drawKnife() {
+  const swing=knifeSwing>0?Math.sin((knifeSwing/.35)*Math.PI)*1.2:0;
+  const x=W*.77+swing*W*.1;
+  const y=H*.79+jumpHeight*.15;
+  c.save();
+  c.translate(x,y);
+  c.rotate(-.45-swing);
+  c.fillStyle="#8a633f";
+  c.fillRect(-7,0,17,95);
+  c.fillStyle="#b7c5cf";
+  c.beginPath();
+  c.moveTo(-3,-2);
+  c.lineTo(12,-120);
+  c.lineTo(24,-10);
+  c.lineTo(9,4);
+  c.closePath();
+  c.fill();
+  c.strokeStyle="#e7f4ff";
+  c.lineWidth=2;
+  c.beginPath();
+  c.moveTo(12,-110);
+  c.lineTo(18,-15);
+  c.stroke();
+  c.restore();
+}
+
+/* ---------------- ENDINGS ---------------- */
+
+function death() {
+  if (scareStarted) return;
+  scareStarted=true;
+  running=false;
+  document.exitPointerLock?.();
+  $("hud").style.display="none";
+  $("overlay").style.display="none";
+  $("scare").style.display="flex";
+  $("scareText").textContent="SKIBIDI.";
+  scareSound();
+
+  // Make the face fill the screen, then flash and glitch
+  const s=$("scare");
+  let ticks=0;
+  const interval=setInterval(()=>{
+    ticks++;
+    s.style.background=ticks%2?"#3c0000":"#080000";
+    $("scareImg").style.transform=
+      `scale(${1.4+Math.random()*.55}) translate(${Math.random()*12-6}px,0)`;
+    if(ticks>16) clearInterval(interval);
+  },65);
+
+  setTimeout(()=>{
+    $("scare").style.display="none";
+    $("hud").style.display="block";
+    $("overlay").style.display="flex";
+    $("overlay").innerHTML=`
+      <div class="panel">
+        <div class="tag">SIGNAL LOST // SUBJECT CAPTURED</div>
+        <h1>GAME<br>OVER.</h1>
+        <p>The tunnels have gone quiet. The singing has not.</p>
+        <div class="row"><button id="again">TRY AGAIN</button></div>
+      </div>`;
+    $("again").onclick=()=>{
+      $("scare").style.display="none";
+      startGame();
+    };
+  },1800);
+}
+
+function win() {
+  running=false;
+  document.exitPointerLock?.();
+  chime();
+  $("overlay").style.display="flex";
+  $("overlay").innerHTML=`
+    <div class="panel">
+      <div class="tag">SIGNAL RESTORED</div>
+      <h1>YOU<br>ESCAPED.</h1>
+      <p>You survived the tunnels. For now, the singing has stopped.</p>
+      <div class="row"><button id="again">PLAY AGAIN</button></div>
+    </div>`;
+  $("again").onclick=startGame;
+}
+
+function loop(now) {
+  if (!running) return;
+  const dt=Math.min(.04,(now-last)/1000||0);
+  last=now;
+  update(dt);
+  if (!running) return;
+  render();
+  requestAnimationFrame(loop);
+}
+})();
+</script>
+</body>
+</html>
